@@ -1,0 +1,139 @@
+import cv2
+import os
+import mediapipe as mp
+import csv
+import pandas as pd
+
+# Class to process landmark data
+class LandmarkProcessor:
+    def __init__(self, landmarks_file):
+        self.landmarks_file = landmarks_file
+
+    # Method to calculate velocity
+    def calculate_velocity(self):
+        landmarks_data = pd.read_csv(self.landmarks_file)
+        velocity_data = landmarks_data.diff()
+        velocity_data['frame'] = landmarks_data['frame']
+        velocity_data.to_csv('velocity.csv', index=False)
+        return velocity_data
+
+    # Method to apply window filter
+    def apply_window_filter(self, data, window_size=5):
+        filtered_data = data.rolling(window=window_size, min_periods=1).mean()
+        filtered_data.to_csv('filtered_velocity.csv', index=False)
+        return filtered_data
+
+    # Method to check velocity and classify as slow, fast, or normal
+    def check_velocity(self):
+        # Load the filtered velocity data
+        filtered_velocity_data = pd.read_csv('filtered_velocity.csv')
+
+        # Prepare a list to store the analysis results
+        analysis_results_list = []
+
+        # Check if velocity goes below 5 or above 10
+        for index, row in filtered_velocity_data.iterrows():
+            frame = row['frame']
+            avg_velocity = row.drop('frame').mean()
+            if avg_velocity < 5:
+                status = 'slow'
+            elif avg_velocity > 10 or -10:
+                status = 'fast'
+            else:
+                status = 'normal'
+            analysis_results_list.append([frame, status])
+
+        # Convert the list to a DataFrame
+        analysis_results = pd.DataFrame(analysis_results_list, columns=['frame', 'status'])
+
+        # Save the analysis results to a CSV file
+        analysis_results.to_csv('velocity_analysis.csv', index=False)
+
+    # Method to calculate acceleration
+    def calculate_acceleration(self):
+        landmarks_data = pd.read_csv(self.landmarks_file)
+        acceleration_data = landmarks_data.diff().diff()
+        acceleration_data['frame'] = landmarks_data['frame']
+        acceleration_data.to_csv('acceleration.csv', index=False)
+
+# Initialize MediaPipe pose estimation
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.8, min_tracking_confidence=0.8)
+
+# Create directories for frames and landmarks if they don't exist
+if not os.path.exists('frames'):
+    os.makedirs('frames')
+if not os.path.exists('landmarks'):
+    os.makedirs('landmarks')
+
+# Load video
+video_path = 'IMG_2707.MOV'
+if not os.path.isfile(video_path):
+    print("Video file not found.")
+    exit()
+
+# Open the video capture
+cap = cv2.VideoCapture(video_path)
+frame_width = int(cap.get(3))
+frame_height = int(cap.get(4))
+frame_rate = cap.get(cv2.CAP_PROP_FPS)
+size = (frame_width, frame_height)
+result = cv2.VideoWriter('processed_video.avi', cv2.VideoWriter_fourcc(*'MJPG'), frame_rate, size)
+
+# Landmark names
+landmark_names = ['NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER',
+                  'RIGHT_EYE_INNER', 'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR',
+                  'RIGHT_EAR', 'MOUTH_LEFT', 'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER',
+                  'LEFT_ELBOW', 'RIGHT_ELBOW', 'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_PINKY',
+                  'RIGHT_PINKY', 'LEFT_INDEX', 'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB',
+                  'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
+                  'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX']
+
+frame_count = 0
+with open('landmarks.csv', 'w', newline='') as csvfile:
+    csvwriter = csv.writer(csvfile)
+    header = ['frame']
+    for name in landmark_names:
+        header.extend([f'X:{name}', f'Y:{name}', f'Z:{name}'])
+    csvwriter.writerow(header)
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(frame_rgb)
+        landmarks = results.pose_landmarks
+
+        if landmarks is not None:
+            landmarks_row = [frame_count]
+            for landmark in landmarks.landmark:
+                x = float(landmark.x * frame_width)
+                y = float(landmark.y * frame_height)
+                z = landmark.z
+                landmarks_row.extend([x, y, z])
+            csvwriter.writerow(landmarks_row)
+
+            mp_drawing = mp.solutions.drawing_utils
+            # Draw landmarks on the frame with green color
+            mp_drawing.draw_landmarks(frame, landmarks, mp_pose.POSE_CONNECTIONS, landmark_drawing_spec=mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2))
+            result.write(frame)
+
+        cv2.imwrite(os.path.join('frames', f'frame_{frame_count}.png'), frame)
+        frame_count += 1
+
+# Release video capture and writer
+cap.release()
+result.release()
+pose.close()
+csvfile.close()
+cv2.destroyAllWindows()
+
+# Process landmarks
+processor = LandmarkProcessor('landmarks.csv')
+velocity_data = processor.calculate_velocity()
+processor.apply_window_filter(velocity_data, window_size=5)
+processor.check_velocity()
+processor.calculate_acceleration()
+
